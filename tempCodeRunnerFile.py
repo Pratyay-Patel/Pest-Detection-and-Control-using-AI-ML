@@ -138,6 +138,8 @@ def predict(img, threshold=0.5):   # lowered threshold
     predicted_index = torch.argmax(pest_probs, dim=1).item()
     confidence = pest_probs.max().item()
 
+    print("DEBUG:", pest_probs.cpu().numpy())
+    
     if confidence < threshold:
         return "Uncertain", confidence
     elif predicted_index == 0:
