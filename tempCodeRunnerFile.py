@@ -19,7 +19,7 @@ CONFIG = {
     "image_size": (224, 224),
     "normalize_mean": [0.485, 0.456, 0.406],
     "normalize_std": [0.229, 0.224, 0.225],
-    "model_path": "pest_model.pth"  # Path to your checkpoint file
+    "model_path": "pest_model_efficientnet.pth"  # Path to your checkpoint file
 }
 
 # The checkpoint was trained with 7 pest classes.
