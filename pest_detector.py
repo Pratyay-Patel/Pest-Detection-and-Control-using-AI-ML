@@ -292,6 +292,12 @@ class PestDetector:
         self.transform = get_transforms('val')
         self.search = GoogleImageCollector()
 
+        self.pest_thresh = 0.75      # require very high pest confidence
+        self.crop_thresh = 0.70       # still ensure crop is confident
+        self.required_frames = 3     # must persist across N frames
+        self._streak = 0
+        self._last_label = None
+
     def predict(self, image):
         # Convert BGR to RGB and prepare tensor
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -315,6 +321,8 @@ class PestDetector:
             }
         }
 
+
+    
     def run_realtime(self):
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
@@ -325,20 +333,64 @@ class PestDetector:
             ret, frame = cap.read()
             if not ret:
                 break
-            
+
             frame = cv2.flip(frame, 1)
-            prediction = self.predict(frame)
-            
-            if prediction['pest']['confidence'] > 0.8 and prediction['crop']['confidence'] > 0.6:
-                text = f"{prediction['crop']['class']} - {prediction['pest']['class']}"
-                color = (0, 0, 255) if prediction['pest']['class'] != "No Pest" else (0, 255, 0)
-                cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-            
+
+            # ---- predict on full frame
+            pred_full = self.predict(frame)
+
+            # ---- also predict on a CENTER CROP (forces “close-up” agreement)
+            h, w = frame.shape[:2]
+            pad_w, pad_h = int(0.2 * w), int(0.2 * h)  # keep central ~60%
+            cx1, cy1, cx2, cy2 = pad_w, pad_h, w - pad_w, h - pad_h
+            center_crop = frame[cy1:cy2, cx1:cx2].copy()
+            pred_center = self.predict(center_crop)
+
+            pest_label_full   = pred_full['pest']['class']
+            pest_conf_full    = pred_full['pest']['confidence']
+            pest_label_center = pred_center['pest']['class']
+            pest_conf_center  = pred_center['pest']['confidence']
+
+            crop_label = pred_full['crop']['class']
+            crop_conf  = pred_full['crop']['confidence']
+
+ 
+
+        # ---- strict acceptance with fallback
+            is_pest = False
+
+            # Case 1: both full and center agree strongly
+            if (pest_label_full != "No Pest"
+                and pest_label_center == pest_label_full
+                and pest_conf_full  >= self.pest_thresh
+                and pest_conf_center >= self.pest_thresh
+                and crop_conf >= self.crop_thresh):
+                is_pest = True
+
+            # Case 2: full frame alone is extremely confident (≥0.90)
+            elif pest_label_full != "No Pest" and pest_conf_full >= 0.90 and crop_conf >= self.crop_thresh:
+                is_pest = True
+
+
+        # ---- display
+            if self._streak >= self.required_frames:
+                conf_show = min(pest_conf_full, pest_conf_center)
+                text = f"{crop_label} - {pest_label_full} ({conf_show:.2f})"
+                cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                # optional: draw center ROI to visualize the “close-up” requirement
+                cv2.rectangle(frame, (cx1, cy1), (cx2, cy2), (0, 0, 255), 1)
+            else:
+                cv2.putText(frame, f"{crop_label} - Healthy", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
             cv2.imshow('Pest Detector', frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
+
         cap.release()
         cv2.destroyAllWindows()
+
+
 
 # ============================
 # Main Execution
