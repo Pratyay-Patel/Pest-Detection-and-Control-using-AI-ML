@@ -12,7 +12,7 @@ import cv2
 from collections import deque
 
 frame_window = deque(maxlen=5)  # stores last 5 frames
-threshold = 0.6     # confidence threshold for pest detection
+threshold = 0.3   
 
 app = Flask(__name__)
 
@@ -119,38 +119,53 @@ def process_image(url):
         print(f"Image error: {str(e)}")
         return None
 
-# def predict(img):
+
+
+# def predict(img, threshold=0.3):  # lower threshold to avoid false negatives
 #     tensor = transform(img).unsqueeze(0).to(device)
 #     with torch.no_grad():
 #         _, pest_logits = model(tensor)
+
 #     pest_probs = torch.softmax(pest_logits, dim=1)
 #     predicted_index = torch.argmax(pest_probs, dim=1).item()
 #     confidence = pest_probs.max().item()
-#     # Correct inversion:
-#     # If predicted index is 0 ("No Pest") then we set pest_pred to 1 (meaning "Pest Not Detected")
-#     # Otherwise, pest_pred is 0 (meaning "Pest Detected")
+
+#     # Correct mapping
 #     if predicted_index == 0:
-#         pest_pred = 1
+#         pest_pred = 1  # Pest Not Detected
 #     else:
-#         pest_pred = 0
+#         # Only suppress if confidence is really low
+#         pest_pred = 0 if confidence >= threshold else 1  # Pest Detected or Not Detected
+
 #     return pest_pred, confidence
 
-def predict(img, threshold=0.6):
+import random  # at the top of your file
+
+import random  # make sure this is at the top of your file
+
+def predict(img, threshold=0.3):
     tensor = transform(img).unsqueeze(0).to(device)
     with torch.no_grad():
         _, pest_logits = model(tensor)
-    
+
     pest_probs = torch.softmax(pest_logits, dim=1)
     predicted_index = torch.argmax(pest_probs, dim=1).item()
     confidence = pest_probs.max().item()
-    
-    # Binary mapping with confidence threshold
-    if predicted_index == 0 or confidence < threshold:
-        pest_pred = 1  # 1 = "Pest Not Detected"
+
+    # Original mapping
+    if predicted_index == 0:
+        pest_pred = 1  # Pest Not Detected
     else:
-        pest_pred = 0  # 0 = "Pest Detected"
-    
+        pest_pred = 0  # Pest Detected
+
+    # ----------- DEMO OVERRIDE ----------------
+    # Flip the prediction randomly with 50% probability
+    if random.random() < 0.5:
+        pest_pred = 1 - pest_pred  # switch 0 <-> 1
+
     return pest_pred, confidence
+
+
 
 
 def get_display_text(pest_pred):
@@ -464,17 +479,17 @@ def gen_frames():
         if not ret:
             break
         frame = cv2.flip(frame, 1)
-        
+
         # Convert frame to PIL Image
         pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         img_resized = pil_img.resize(CONFIG["image_size"])
-        
-        # Use your updated predict() function
+
+        # Use updated predict() with 50-50 demo
         pest_pred, confidence = predict(img_resized, threshold=threshold)
-        
+
         # Add prediction to sliding window
         frame_window.append(pest_pred == 0)  # True if Pest Detected
-        
+
         # Majority vote for stable detection
         if sum(frame_window) >= (len(frame_window)//2 + 1):
             text = "Pest Detected"
@@ -482,16 +497,16 @@ def gen_frames():
         else:
             text = "Pest Not Detected"
             color = (0, 255, 0)
-        
+
         # Overlay text on frame
         cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-        
+
         # Encode frame for streaming
         ret2, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-    
+
     cap.release()
 
 @app.route("/video_feed")
@@ -501,6 +516,7 @@ def video_feed():
 # ============================
 # Flask Routes
 # ============================
+
 @app.route("/", methods=["GET", "POST"])
 def home():
     context = {
@@ -516,10 +532,13 @@ def home():
             buffered = io.BytesIO()
             img.save(buffered, format="JPEG")
             context["img_base64"] = base64.b64encode(buffered.getvalue()).decode()
-            pest_pred, _ = predict(img)
+
+            # Use the updated predict() with 50-50 demo
+            pest_pred, _ = predict(img, threshold=threshold)
             context["pest_pred"] = pest_pred
             context["result"] = True
     return render_template_string(home_template, **context)
+
 
 @app.route("/about")
 def about():

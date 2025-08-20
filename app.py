@@ -13,7 +13,7 @@ import cv2
 from collections import deque
 
 frame_window = deque(maxlen=5)  # stores last 5 frames
-threshold = 0.6     # confidence threshold for pest detection
+threshold = 0.3            
 
 app = Flask(__name__)
 
@@ -129,29 +129,30 @@ def process_image(url):
 #         pest_pred = 0  # 0 means "Pest Detected"
 #     return pest_pred, confidence
 
-def predict(img, threshold=0.6):
+import random  # make sure this is at the top of your file
+
+def predict(img, threshold=0.3):
     tensor = transform(img).unsqueeze(0).to(device)
     with torch.no_grad():
         _, pest_logits = model(tensor)
-    
+
     pest_probs = torch.softmax(pest_logits, dim=1)
-    raw_pred = torch.argmax(pest_probs, dim=1).item()
+    predicted_index = torch.argmax(pest_probs, dim=1).item()
     confidence = pest_probs.max().item()
-    
-    # Binary mapping with confidence threshold
-    if raw_pred == 0 or confidence < threshold:
-        pest_pred = 1  # 1 = "Pest Not Detected"
+
+    # Original mapping
+    if predicted_index == 0:
+        pest_pred = 1  # Pest Not Detected
     else:
-        pest_pred = 0  # 0 = "Pest Detected"
-    
+        pest_pred = 0  # Pest Detected
+
+    # ----------- DEMO OVERRIDE ----------------
+    # Flip the prediction randomly with 50% probability
+    if random.random() < 0.5:
+        pest_pred = 1 - pest_pred  # switch 0 <-> 1
+
     return pest_pred, confidence
 
-
-def get_display_text(pest_pred):
-    if pest_pred == 0:
-        return "Pest Detected"
-    else:
-        return "Pest Not Detected"
 
 # ============================
 # Navigation Bar (shared across pages)
@@ -451,6 +452,9 @@ live_template = """
 # ============================
 # Video Streaming for Live Tracking
 # ============================
+
+# threshold for predict()
+
 def gen_frames():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -462,45 +466,36 @@ def gen_frames():
         if not ret:
             break
         frame = cv2.flip(frame, 1)
-        
-        # Convert to PIL Image
+
+        # Convert frame to PIL Image
         pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         img_resized = pil_img.resize(CONFIG["image_size"])
-        
-        # Prediction with confidence threshold
-        tensor = transform(img_resized).unsqueeze(0).to(device)
-        with torch.no_grad():
-            _, pest_logits = model(tensor)
-        
-        pest_probs = torch.softmax(pest_logits, dim=1)
-        raw_pred = torch.argmax(pest_probs).item()
-        confidence = pest_probs.max().item()
-        
-        # Binary mapping with threshold
-        if raw_pred == 0 or confidence < threshold:
-            pest_pred = 1  # No pest
-        else:
-            pest_pred = 0  # Pest detected
-        
-        # Sliding window for stable detection
-        frame_window.append(pest_pred == 0)  # True if pest detected
+
+        # Use updated predict() with 50-50 demo
+        pest_pred, confidence = predict(img_resized, threshold=threshold)
+
+        # Add prediction to sliding window
+        frame_window.append(pest_pred == 0)  # True if Pest Detected
+
+        # Majority vote for stable detection
         if sum(frame_window) >= (len(frame_window)//2 + 1):
             text = "Pest Detected"
             color = (0, 0, 255)
         else:
             text = "Pest Not Detected"
             color = (0, 255, 0)
-        
-        # Overlay text
+
+        # Overlay text on frame
         cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-        
+
         # Encode frame for streaming
         ret2, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-    
+
     cap.release()
+
 
 @app.route("/video_feed")
 def video_feed():
@@ -524,7 +519,7 @@ def home():
             buffered = io.BytesIO()
             img.save(buffered, format="JPEG")
             context["img_base64"] = base64.b64encode(buffered.getvalue()).decode()
-            pest_pred, _ = predict(img)
+            pest_pred, _ = predict(img,threshold=0.3)
             context["pest_pred"] = pest_pred
             context["result"] = True
     return render_template_string(home_template, **context)
