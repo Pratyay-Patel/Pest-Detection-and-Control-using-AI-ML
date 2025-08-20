@@ -10,6 +10,10 @@ import torchvision.models as models
 from PIL import Image
 from flask import Flask, request, render_template_string, Response, url_for
 import cv2
+from collections import deque
+
+frame_window = deque(maxlen=5)  # stores last 5 frames
+threshold = 0.6     # confidence threshold for pest detection
 
 app = Flask(__name__)
 
@@ -109,21 +113,39 @@ def process_image(url):
         print(f"Image error: {str(e)}")
         return None
 
-def predict(img):
+# def predict(img):
+#     tensor = transform(img).unsqueeze(0).to(device)
+#     with torch.no_grad():
+#         _, pest_logits = model(tensor)
+#     pest_probs = torch.softmax(pest_logits, dim=1)
+#     raw_pred = torch.argmax(pest_probs, dim=1).item()
+#     confidence = pest_probs.max().item()
+#     # NEW BINARY MAPPING:
+#     # If the raw prediction is nonzero, we now treat it as "Pest Detected"
+#     # Otherwise, if raw_pred == 0, we consider it as "Pest Not Detected"
+#     if raw_pred == 0:
+#         pest_pred = 1  # 1 means "Pest Not Detected"
+#     else:
+#         pest_pred = 0  # 0 means "Pest Detected"
+#     return pest_pred, confidence
+
+def predict(img, threshold=0.6):
     tensor = transform(img).unsqueeze(0).to(device)
     with torch.no_grad():
         _, pest_logits = model(tensor)
+    
     pest_probs = torch.softmax(pest_logits, dim=1)
     raw_pred = torch.argmax(pest_probs, dim=1).item()
     confidence = pest_probs.max().item()
-    # NEW BINARY MAPPING:
-    # If the raw prediction is nonzero, we now treat it as "Pest Detected"
-    # Otherwise, if raw_pred == 0, we consider it as "Pest Not Detected"
-    if raw_pred == 0:
-        pest_pred = 1  # 1 means "Pest Not Detected"
+    
+    # Binary mapping with confidence threshold
+    if raw_pred == 0 or confidence < threshold:
+        pest_pred = 1  # 1 = "Pest Not Detected"
     else:
-        pest_pred = 0  # 0 means "Pest Detected"
+        pest_pred = 0  # 0 = "Pest Detected"
+    
     return pest_pred, confidence
+
 
 def get_display_text(pest_pred):
     if pest_pred == 0:
@@ -391,6 +413,41 @@ live_template = """
 </html>
 """
 
+# # ============================
+# # Video Streaming for Live Tracking
+# # ============================
+# def gen_frames():
+#     cap = cv2.VideoCapture(0)
+#     if not cap.isOpened():
+#         print("Error: Could not open webcam.")
+#         return
+#     while True:
+#         ret, frame = cap.read()
+#         if not ret:
+#             break
+#         frame = cv2.flip(frame, 1)
+#         pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+#         img_resized = pil_img.resize(CONFIG["image_size"])
+#         tensor = transform(img_resized).unsqueeze(0).to(device)
+#         with torch.no_grad():
+#             _, pest_logits = model(tensor)
+#         pest_probs = torch.softmax(pest_logits, dim=1)
+#         raw_pred = torch.argmax(pest_probs).item()
+#         # Use the same binary mapping as in predict():
+#         if raw_pred == 0:
+#             text = "Pest Not Detected"
+#             color = (0, 255, 0)
+#         else:
+#             text = "Pest Detected"
+#             color = (0, 0, 255)
+#         cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+#         ret2, buffer = cv2.imencode('.jpg', frame)
+#         frame_bytes = buffer.tobytes()
+#         yield (b'--frame\r\n'
+#                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+#     cap.release()
+
+
 # ============================
 # Video Streaming for Live Tracking
 # ============================
@@ -399,30 +456,50 @@ def gen_frames():
     if not cap.isOpened():
         print("Error: Could not open webcam.")
         return
+
     while True:
         ret, frame = cap.read()
         if not ret:
             break
         frame = cv2.flip(frame, 1)
+        
+        # Convert to PIL Image
         pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         img_resized = pil_img.resize(CONFIG["image_size"])
+        
+        # Prediction with confidence threshold
         tensor = transform(img_resized).unsqueeze(0).to(device)
         with torch.no_grad():
             _, pest_logits = model(tensor)
+        
         pest_probs = torch.softmax(pest_logits, dim=1)
         raw_pred = torch.argmax(pest_probs).item()
-        # Use the same binary mapping as in predict():
-        if raw_pred == 0:
-            text = "Pest Not Detected"
-            color = (0, 255, 0)
+        confidence = pest_probs.max().item()
+        
+        # Binary mapping with threshold
+        if raw_pred == 0 or confidence < threshold:
+            pest_pred = 1  # No pest
         else:
+            pest_pred = 0  # Pest detected
+        
+        # Sliding window for stable detection
+        frame_window.append(pest_pred == 0)  # True if pest detected
+        if sum(frame_window) >= (len(frame_window)//2 + 1):
             text = "Pest Detected"
             color = (0, 0, 255)
+        else:
+            text = "Pest Not Detected"
+            color = (0, 255, 0)
+        
+        # Overlay text
         cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+        
+        # Encode frame for streaming
         ret2, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+    
     cap.release()
 
 @app.route("/video_feed")
