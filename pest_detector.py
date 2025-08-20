@@ -329,7 +329,7 @@ class PestDetector:
             frame = cv2.flip(frame, 1)
             prediction = self.predict(frame)
             
-            if prediction['pest']['confidence'] > 0.6 and prediction['crop']['confidence'] > 0.6:
+            if prediction['pest']['confidence'] > 0.8 and prediction['crop']['confidence'] > 0.6:
                 text = f"{prediction['crop']['class']} - {prediction['pest']['class']}"
                 color = (0, 0, 255) if prediction['pest']['class'] != "No Pest" else (0, 255, 0)
                 cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
