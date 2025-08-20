@@ -9,6 +9,9 @@ from torchvision.models import resnet50, ResNet50_Weights
 from PIL import Image
 from flask import Flask, request, render_template_string, Response, url_for
 import cv2
+from collections import deque
+predictions_queue = deque(maxlen=5)
+
 
 app = Flask(__name__)
 
@@ -111,21 +114,38 @@ def process_image(url):
         print(f"Image error: {str(e)}")
         return None
 
-def predict(img):
+# def predict(img):
+#     tensor = transform(img).unsqueeze(0).to(device)
+#     with torch.no_grad():
+#         _, pest_logits = model(tensor)
+#     pest_probs = torch.softmax(pest_logits, dim=1)
+#     predicted_index = torch.argmax(pest_probs, dim=1).item()
+#     confidence = pest_probs.max().item()
+#     # Correct inversion:
+#     # If predicted index is 0 ("No Pest") then we set pest_pred to 1 (meaning "Pest Not Detected")
+#     # Otherwise, pest_pred is 0 (meaning "Pest Detected")
+#     if predicted_index == 0:
+#         pest_pred = 1
+#     else:
+#         pest_pred = 0
+#     return pest_pred, confidence
+
+def predict(img, threshold=0.5):   # lowered threshold
     tensor = transform(img).unsqueeze(0).to(device)
     with torch.no_grad():
         _, pest_logits = model(tensor)
     pest_probs = torch.softmax(pest_logits, dim=1)
     predicted_index = torch.argmax(pest_probs, dim=1).item()
     confidence = pest_probs.max().item()
-    # Correct inversion:
-    # If predicted index is 0 ("No Pest") then we set pest_pred to 1 (meaning "Pest Not Detected")
-    # Otherwise, pest_pred is 0 (meaning "Pest Detected")
-    if predicted_index == 0:
-        pest_pred = 1
+
+    if confidence < threshold:
+        return "Uncertain", confidence
+    elif predicted_index == 0:
+        return "Pest Not Detected", confidence
     else:
-        pest_pred = 0
-    return pest_pred, confidence
+        return "Pest Detected", confidence
+
+
 
 def get_display_text(pest_pred):
     # Based on our mapping:
@@ -399,33 +419,69 @@ live_template = """
 # ============================
 # Video Streaming for Live Tracking
 # ============================
+# def gen_frames():
+#     cap = cv2.VideoCapture(0)
+#     while True:
+#         ret, frame = cap.read()
+#         if not ret:
+#             break
+#         frame = cv2.flip(frame, 1)
+#         pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+#         img_resized = pil_img.resize(CONFIG["image_size"])
+#         tensor = transform(img_resized).unsqueeze(0).to(device)
+#         with torch.no_grad():
+#             _, pest_logits = model(tensor)
+#         pest_probs = torch.softmax(pest_logits, dim=1)
+#         predicted_index = torch.argmax(pest_probs).item()
+#         # Apply the same inversion logic as in predict():
+#         if predicted_index == 0:
+#             text = "Pest Not Detected"
+#             color = (0, 255, 0)
+#         else:
+#             text = "Pest Detected"
+#             color = (0, 0, 255)
+#         cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+#         ret2, buffer = cv2.imencode('.jpg', frame)
+#         frame_bytes = buffer.tobytes()
+#         yield (b'--frame\r\n'
+#                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+#     cap.release()
+
+from collections import deque
+predictions_queue = deque(maxlen=5)
+
 def gen_frames():
-    cap = cv2.VideoCapture(0)
+    camera = cv2.VideoCapture(0)
     while True:
-        ret, frame = cap.read()
-        if not ret:
+        success, frame = camera.read()
+        if not success:
             break
-        frame = cv2.flip(frame, 1)
-        pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        img_resized = pil_img.resize(CONFIG["image_size"])
-        tensor = transform(img_resized).unsqueeze(0).to(device)
-        with torch.no_grad():
-            _, pest_logits = model(tensor)
-        pest_probs = torch.softmax(pest_logits, dim=1)
-        predicted_index = torch.argmax(pest_probs).item()
-        # Apply the same inversion logic as in predict():
-        if predicted_index == 0:
-            text = "Pest Not Detected"
-            color = (0, 255, 0)
         else:
-            text = "Pest Detected"
-            color = (0, 0, 255)
-        cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-        ret2, buffer = cv2.imencode('.jpg', frame)
-        frame_bytes = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-    cap.release()
+            # Get prediction with confidence
+            label, confidence = predict(frame)
+
+            # Smooth prediction over last 5 frames
+            predictions_queue.append(label)
+
+            # Majority vote
+            if predictions_queue.count("Pest Detected") > len(predictions_queue) // 2:
+                final_label = "Pest Detected"
+            elif predictions_queue.count("Pest Not Detected") > len(predictions_queue) // 2:
+                final_label = "Pest Not Detected"
+            else:
+                final_label = "Uncertain"
+
+
+            # Draw result on frame
+            cv2.putText(frame, f"{final_label} ({confidence:.2f})",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                        1, (0, 255, 0), 2)
+
+            # Encode for streaming
+            ret, buffer = cv2.imencode('.jpg', frame)
+            frame = buffer.tobytes()
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 @app.route("/video_feed")
 def video_feed():
