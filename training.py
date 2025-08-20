@@ -25,7 +25,8 @@ CONFIG = {
     "weight_decay": 1e-4,
     "num_workers": 4,
     "cache_file": "pest_dataset.pkl",
-    "model_save": "pest_model.pth"
+    "model_save": "pest_model_efficientnet.pth"
+
 }
 
 # Set seeds for reproducibility

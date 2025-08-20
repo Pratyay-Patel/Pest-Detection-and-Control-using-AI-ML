@@ -5,7 +5,7 @@ import requests
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
-from torchvision.models import resnet50, ResNet50_Weights
+from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 from PIL import Image
 from flask import Flask, request, render_template_string, Response, url_for
 import cv2
@@ -55,17 +55,17 @@ def get_transforms(mode='val'):
 transform = get_transforms('val')
 
 # ============================
-# Model Architecture (PestResNet)
+# Model Architecture (PestNet)
 # Using ResNet50 as backbone.
 # ============================
-class PestResNet(nn.Module):
+class PestNet(nn.Module):
     def __init__(self, num_crops, num_pests):
-        super(PestResNet, self).__init__()
-        base = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+        super(PestNet, self).__init__()
+        base = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
         # Use all layers except the last two (avgpool and fc)
         self.features = nn.Sequential(*(list(base.children())[:-2]))
         self.avgpool = nn.AdaptiveAvgPool2d(1)
-        num_ftrs = 2048  # ResNet50 outputs 2048 features
+        num_ftrs = 1280  # ResNet50 outputs 1280 features
         
         self.crop_head = nn.Sequential(
             nn.Linear(num_ftrs, 512),
@@ -89,7 +89,7 @@ class PestResNet(nn.Module):
 # Load the Model from Checkpoint
 # ============================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = PestResNet(len(LABEL_MAPS["crops"]), len(LABEL_MAPS["pests"])).to(device)
+model = PestNet(len(LABEL_MAPS["crops"]), len(LABEL_MAPS["pests"])).to(device)
 checkpoint = torch.load(CONFIG["model_path"], map_location=device)
 if isinstance(checkpoint, dict) and "model_state" in checkpoint:
     state_dict = checkpoint["model_state"]
