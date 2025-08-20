@@ -1,6 +1,5 @@
 import os
 import pickle
-import random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,8 +8,6 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 from PIL import Image
 from io import BytesIO
-import requests
-from google_images_search import GoogleImagesSearch
 from sklearn.model_selection import train_test_split
 import torchvision.models as models
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -28,8 +25,7 @@ CONFIG = {
     "weight_decay": 1e-4,
     "num_workers": 4,
     "cache_file": "pest_dataset.pkl",
-    "model_save": "pest_model.pth",
-    "num_images_per_query": 15  # Increased from original 5
+    "model_save": "pest_model.pth"
 }
 
 # Set seeds for reproducibility
@@ -38,84 +34,21 @@ np.random.seed(CONFIG["seed"])
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 ############################################
-# Data Collection with Caching
+# Dataset Loading
 ############################################
-queries = [
-    ("wheat healthy", ("wheat", "healthy")),
-    ("wheat aphid", ("wheat", "aphid")),
-    ("wheat rust", ("wheat", "rust")),
-    ("rice healthy", ("rice", "healthy")),
-    ("rice brown planthopper", ("rice", "brown planthopper")),
-    ("rice leaf blight", ("rice", "leaf blight")),
-    ("corn healthy", ("corn", "healthy")),
-    ("corn armyworm", ("corn", "armyworm")),
-    ("tomato healthy", ("tomato", "healthy")),
-    ("tomato whitefly", ("tomato", "whitefly"))
-]
-
-# Create label mappings
-crop2idx = {name: i for i, name in enumerate(sorted({lbl[0] for _, lbl in queries}))}
-pest2idx = {name: i for i, name in enumerate(sorted({lbl[1] for _, lbl in queries}))}
-idx2crop = {v: k for k, v in crop2idx.items()}
-idx2pest = {v: k for k, v in pest2idx.items()}
-
-def fetch_image(url):
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try:
-        response = requests.get(url, timeout=30, headers=headers)
-        if not response.headers.get("Content-Type", "").startswith("image"):
-            return None
-        img = Image.open(BytesIO(response.content)).convert("RGB")
-        return img.resize(CONFIG["image_size"])
-    except Exception as e:
-        print(f"Error fetching {url}: {str(e)}")
-        return None
-
 if not os.path.exists(CONFIG["cache_file"]):
-    print("Downloading dataset...")
-    images = []
-    labels = []
-    
-    # Initialize Google Images Search (replace with your credentials)
-    gis = GoogleImagesSearch("AIzaSyBfEDmAMsBamVUIt1wg3SvV8QG1M6HmSiU", "52b8c798098b94ce3")
-    
-    for query_text, (crop_label, pest_label) in queries:
-        print(f"Searching: {query_text}")
-        search_params = {
-            'q': query_text,
-            'num': CONFIG["num_images_per_query"],
-            'safe': 'high',
-            'fileType': 'jpg',
-            'imgType': 'photo'
-        }
-        
-        try:
-            gis.search(search_params=search_params)
-            for image in gis.results():
-                img = fetch_image(image.url)
-                if img:
-                    images.append(img)
-                    labels.append((crop2idx[crop_label], pest2idx[pest_label]))
-        except Exception as e:
-            print(f"Search failed for {query_text}: {str(e)}")
-    
-    if len(images) == 0:
-        raise RuntimeError("No images downloaded - check API credentials")
-    
-    # Convert images to bytes for storage
-    image_bytes = []
-    for img in images:
-        buf = BytesIO()
-        img.save(buf, format='JPEG')
-        image_bytes.append(buf.getvalue())
-    
-    with open(CONFIG["cache_file"], "wb") as f:
-        pickle.dump((image_bytes, labels), f)
-    print(f"Dataset cached to {CONFIG['cache_file']}")
-else:
-    print("Loading cached dataset...")
-    with open(CONFIG["cache_file"], "rb") as f:
-        image_bytes, labels = pickle.load(f)
+    raise RuntimeError(f"Dataset cache file {CONFIG['cache_file']} not found. "
+                       f"Please generate it before training.")
+
+print("Loading cached dataset...")
+with open(CONFIG["cache_file"], "rb") as f:
+    image_bytes, labels = pickle.load(f)
+
+# Create label mappings dynamically from labels
+crops = sorted(set(lbl[0] for lbl in labels))
+pests = sorted(set(lbl[1] for lbl in labels))
+num_crops = max(crops) + 1
+num_pests = max(pests) + 1
 
 ############################################
 # Dataset and Model
@@ -127,14 +60,15 @@ class PestDataset(Dataset):
         self.transform = transform or transforms.Compose([
             transforms.Resize(CONFIG["image_size"]),
             transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            transforms.Normalize([0.485, 0.456, 0.406],
+                                 [0.229, 0.224, 0.225])
         ])
     
     def __len__(self):
         return len(self.image_bytes)
     
     def __getitem__(self, idx):
-        img = Image.open(BytesIO(self.image_bytes[idx]))
+        img = Image.open(BytesIO(self.image_bytes[idx])).convert("RGB")
         if self.transform:
             img = self.transform(img)
         crop_label, pest_label = self.labels[idx]
@@ -180,7 +114,8 @@ def train():
         transforms.RandomRotation(15),
         transforms.ColorJitter(brightness=0.2, contrast=0.2),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        transforms.Normalize([0.485, 0.456, 0.406],
+                             [0.229, 0.224, 0.225])
     ]))
     
     test_dataset = PestDataset(test_data, test_labels)
@@ -192,7 +127,7 @@ def train():
                             shuffle=False, num_workers=CONFIG["num_workers"])
     
     # Initialize model
-    model = PestNet(len(crop2idx), len(pest2idx)).to(device)
+    model = PestNet(num_crops, num_pests).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=CONFIG["learning_rate"], 
                           weight_decay=CONFIG["weight_decay"])
     scheduler = ReduceLROnPlateau(optimizer, 'min', patience=2)

@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
+import torchvision.models as models
 from PIL import Image
 from flask import Flask, request, render_template_string, Response, url_for
 import cv2
@@ -54,44 +55,39 @@ def get_transforms(mode='val'):
 transform = get_transforms('val')
 
 # ============================
-# Model Architecture (PestResNet)
+# Model Architecture (PestNet)
 # Using EfficientNet-B0 as backbone with an adapter to match checkpoint dimensions.
 # ============================
-class PestResNet(nn.Module):
+class PestNet(nn.Module):
     def __init__(self, num_crops, num_pests):
-        super(PestResNet, self).__init__()
-        base = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
-        self.features = base.features
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-        num_ftrs = 1280  # EfficientNet-B0 outputs 1280 features
+        super().__init__()
+        base = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
+        self.features = nn.Sequential(*list(base.children())[:-1])
 
-        # Adapter layer: converting 1280 -> 2048 to match the checkpoint's head dimensions
-        self.adapter = nn.Linear(num_ftrs, 2048)
-        
         self.crop_head = nn.Sequential(
-            nn.Linear(2048, 512),
-            nn.BatchNorm1d(512),
+            nn.Linear(1280, 512),
             nn.ReLU(),
+            nn.Dropout(0.3),
             nn.Linear(512, num_crops)
         )
+
         self.pest_head = nn.Sequential(
-            nn.Linear(2048, 512),
-            nn.BatchNorm1d(512),
+            nn.Linear(1280, 512),
             nn.ReLU(),
+            nn.Dropout(0.3),
             nn.Linear(512, num_pests)
         )
-        
+
     def forward(self, x):
-        x = self.features(x)
-        x = self.avgpool(x).view(x.size(0), -1)
-        x = self.adapter(x)  # Convert to 2048 features
+        x = self.features(x).flatten(1)
         return self.crop_head(x), self.pest_head(x)
+
 
 # ============================
 # Load the Model from Checkpoint
 # ============================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = PestResNet(len(LABEL_MAPS["crops"]), len(LABEL_MAPS["pests"])).to(device)
+model = PestNet(len(LABEL_MAPS["crops"]), len(LABEL_MAPS["pests"])).to(device)
 checkpoint = torch.load(CONFIG["model_path"], map_location=device)
 if isinstance(checkpoint, dict) and "model_state" in checkpoint:
     state_dict = checkpoint["model_state"]
